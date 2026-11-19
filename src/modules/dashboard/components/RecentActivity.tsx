@@ -6,7 +6,7 @@
 interface ActivityItem {
   type:  'english_review' | 'spanish_review' | 'bbc_episode'
   label: string
-  date:  Date
+  date:  string  // ISO string — serializable Server→Client
 }
 
 interface Props {
@@ -19,7 +19,7 @@ const TYPE_CONFIG = {
   bbc_episode:    { icon: '📻', color: 'text-blue-500' },
 }
 
-function timeAgo(date: Date): string {
+function timeAgo(date: string): string {
   const diff = Date.now() - new Date(date).getTime()
   const mins = Math.floor(diff / 60_000)
   if (mins < 60)   return `hace ${mins}m`

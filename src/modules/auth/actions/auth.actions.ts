@@ -6,7 +6,7 @@
 
 import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
-import { createClient } from '@lib/supabase/server'
+import { createServerClient } from '@lib/supabase/server'
 import { loginSchema, signupSchema } from '@lib/validations/auth'
 import { fail, ok, type ActionResult } from '@shared/types'
 
@@ -22,7 +22,7 @@ export async function loginAction(formData: FormData): Promise<ActionResult> {
     return fail('Datos inválidos', parsed.error.flatten().fieldErrors)
   }
 
-  const supabase = createClient()
+  const supabase = await createServerClient()
   const { error } = await supabase.auth.signInWithPassword(parsed.data)
 
   if (error) {
@@ -51,7 +51,7 @@ export async function signupAction(formData: FormData): Promise<ActionResult> {
     return fail('Datos inválidos', parsed.error.flatten().fieldErrors)
   }
 
-  const supabase = createClient()
+  const supabase = await createServerClient()
   const { error } = await supabase.auth.signUp({
     email:    parsed.data.email,
     password: parsed.data.password,
@@ -69,7 +69,7 @@ export async function signupAction(formData: FormData): Promise<ActionResult> {
 
 // ── Login con Google OAuth ─────────────────────────────────────
 export async function loginWithGoogleAction(): Promise<ActionResult<{ url: string }>> {
-  const supabase = createClient()
+  const supabase = await createServerClient()
 
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
@@ -91,7 +91,7 @@ export async function loginWithGoogleAction(): Promise<ActionResult<{ url: strin
 
 // ── Logout ─────────────────────────────────────────────────────
 export async function logoutAction(): Promise<void> {
-  const supabase = createClient()
+  const supabase = await createServerClient()
   await supabase.auth.signOut()
   revalidatePath('/', 'layout')
   redirect('/login')

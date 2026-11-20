@@ -56,14 +56,15 @@ export function ReviewClient({ session }: Props) {
     })
   }
 
-  const progress = Math.round(((currentIdx) / session.totalCards) * 100)
+  const totalCards = session.cards.length
+  const progress = totalCards > 0 ? Math.round((currentIdx / totalCards) * 100) : 0
 
   return (
     <div className="space-y-4">
       {/* Barra de progreso */}
       <div>
         <div className="flex justify-between text-xs text-gray-500 mb-1">
-          <span>{currentIdx}/{session.totalCards}</span>
+          <span>{currentIdx}/{totalCards}</span>
           <span>{progress}%</span>
         </div>
         <div className="h-2 w-full rounded-full bg-gray-200">

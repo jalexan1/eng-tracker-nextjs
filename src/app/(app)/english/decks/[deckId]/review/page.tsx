@@ -32,13 +32,13 @@ export default async function ReviewPage({ params }: Props) {
 
   const session = sessionResult.data
 
-  if (session.totalCards === 0) {
+  if (session.cards.length === 0) {
     return (
       <div className="card max-w-lg mx-auto text-center py-12">
         <p className="text-4xl mb-3">🎉</p>
         <h2 className="text-xl font-bold text-gray-900">¡Mazo al día!</h2>
         <p className="text-sm text-gray-500 mt-2">
-          No hay tarjetas pendientes en <strong>{deck.name}</strong>.
+          No hay tarjetas pendientes en <strong>{deck.title}</strong>.
         </p>
         <a href="/english/decks" className="btn-primary mt-6 inline-block">
           Volver a mazos
@@ -54,9 +54,9 @@ export default async function ReviewPage({ params }: Props) {
   return (
     <div className="max-w-2xl mx-auto space-y-4">
       <div>
-        <h1 className="text-xl font-bold text-gray-900">{deck.name}</h1>
+        <h1 className="text-xl font-bold text-gray-900">{deck.title}</h1>
         <p className="text-sm text-gray-500">
-          {session.totalCards} tarjetas pendientes
+          {session.cards.length} tarjetas pendientes
         </p>
       </div>
       <ReviewClient session={session} />

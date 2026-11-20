@@ -47,6 +47,7 @@ export function ReviewClient({ session }: Props) {
   async function handleDifficulty(difficulty: Difficulty) {
     const responseTimeMs = Date.now() - startTime
     startTrans(async () => {
+	  if (!card) return
       await reviewCardAction({ cardId: card.id, difficulty, responseTimeMs })
       setCompleted(c => c + 1)
       setIdx(i => i + 1)

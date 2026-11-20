@@ -32,7 +32,7 @@ export function LoginForm() {
     startTransition(async () => {
       const result = await loginWithGoogleAction()
       if (result.success) {
-        router.push(result.data.url)
+        router.push(result.data.url as never)
       } else {
         setError(result.error)
       }

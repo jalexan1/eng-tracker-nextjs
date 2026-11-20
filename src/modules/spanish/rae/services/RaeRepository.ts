@@ -24,7 +24,7 @@ export class RaeRepository {
       .insert(spanish.raeLookups)
       .values(data)
       .returning()
-    return rows[0]
+    return rows[0]!
   }
 }
 

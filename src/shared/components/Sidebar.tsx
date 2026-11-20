@@ -62,7 +62,7 @@ export function Sidebar() {
                 const isActive = pathname === item.href || pathname.startsWith(item.href + '/')
                 return (
                   <li key={item.href}>
-                    {item.disabled ? (
+                    {'disabled' in item && item.disabled ? (
                       <span className="flex items-center gap-3 px-3 py-2 rounded-lg text-gray-600 cursor-not-allowed text-sm">
                         <span>{item.icon}</span>
                         <span>{item.label}</span>
@@ -72,7 +72,7 @@ export function Sidebar() {
                       </span>
                     ) : (
                       <Link
-                        href={item.href}
+                        href={item.href as never}
                         className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
                           isActive
                             ? 'bg-english/20 text-english'

@@ -26,7 +26,7 @@ export async function createDeckAction(
 
     const deck = await decksRepository.create({
       userId:      user.id,
-      name:        parsed.data.name,
+      title:       parsed.data.title,
       description: parsed.data.description ?? null,
     })
 
@@ -55,7 +55,7 @@ export async function createCardAction(
       deckId:  parsed.data.deckId,
       front:   parsed.data.front,
       back:    parsed.data.back,
-      example: parsed.data.example ?? null,
+      exampleSentence: parsed.data.exampleSentence ?? null,
     })
 
     await decksRepository.updateCardCounts(parsed.data.deckId)

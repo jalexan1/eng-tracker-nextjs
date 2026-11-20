@@ -41,7 +41,7 @@ export class DecksRepository implements IRepository<FlashcardDeck, NewFlashcardD
       .insert(spanish.flashcardDecks)
       .values(data)
       .returning()
-    return rows[0]
+    return rows[0]!
   }
 
   async update(id: string, data: Partial<NewFlashcardDeck>): Promise<FlashcardDeck> {
@@ -50,7 +50,7 @@ export class DecksRepository implements IRepository<FlashcardDeck, NewFlashcardD
       .set({ ...data, updatedAt: new Date() })
       .where(eq(spanish.flashcardDecks.id, id))
       .returning()
-    return rows[0]
+    return rows[0]!
   }
 
   async delete(id: string): Promise<void> {
@@ -73,8 +73,8 @@ export class DecksRepository implements IRepository<FlashcardDeck, NewFlashcardD
     await db
       .update(spanish.flashcardDecks)
       .set({
-        totalCards: counts[0].total,
-        dueCards:   counts[0].due,
+        totalCards: counts[0]!.total,
+        dueCards:   counts[0]!.due,
         updatedAt:  new Date(),
       })
       .where(eq(spanish.flashcardDecks.id, deckId))
@@ -122,13 +122,13 @@ export class CardsRepository implements IRepository<Flashcard, NewFlashcard> {
       .values({
         ...data,
         // Estado SM-2 inicial
-        easinessFactor: String(INITIAL_SM2_STATE.easinessFactor),
+        easinessFactor: INITIAL_SM2_STATE.easinessFactor,
         intervalDays:   INITIAL_SM2_STATE.intervalDays,
         repetitions:    INITIAL_SM2_STATE.repetitions,
         nextReviewAt:   new Date(),
       })
       .returning()
-    return rows[0]
+    return rows[0]!
   }
 
   async update(id: string, data: Partial<NewFlashcard>): Promise<Flashcard> {
@@ -137,7 +137,7 @@ export class CardsRepository implements IRepository<Flashcard, NewFlashcard> {
       .set({ ...data, updatedAt: new Date() })
       .where(eq(spanish.flashcards.id, id))
       .returning()
-    return rows[0]
+    return rows[0]!
   }
 
   async delete(id: string): Promise<void> {
@@ -155,8 +155,8 @@ export class CardsRepository implements IRepository<Flashcard, NewFlashcard> {
   ): Promise<Flashcard> {
     const currentState = {
       easinessFactor: parseFloat(String(card.easinessFactor)),
-      intervalDays:   card.intervalDays,
-      repetitions:    card.repetitions,
+      intervalDays:   card.intervalDays ?? 0,
+      repetitions:    card.repetitions ?? 0,
     }
 
     const result = calculateNextReview(currentState, difficulty)
@@ -165,7 +165,7 @@ export class CardsRepository implements IRepository<Flashcard, NewFlashcard> {
     const [updated] = await db
       .update(spanish.flashcards)
       .set({
-        easinessFactor: String(result.easinessFactor),
+        easinessFactor: result.easinessFactor,
         intervalDays:   result.intervalDays,
         repetitions:    result.repetitions,
         nextReviewAt:   result.nextReviewAt,
@@ -176,15 +176,20 @@ export class CardsRepository implements IRepository<Flashcard, NewFlashcard> {
 
     // Log inmutable (INSERT ONLY por RLS) — no se puede modificar
     await db.insert(spanish.cardReviews).values({
-      cardId:         card.id,
-      userId:         card.userId,
-      difficulty:     difficulty,
-      easinessFactor: String(result.easinessFactor),
-      intervalDays:   result.intervalDays,
-      responseTimeMs: responseTimeMs ?? null,
+      cardId:             card.id,
+      userId:             card.userId,
+      deckId:             card.deckId,
+      difficulty,
+      efBefore:           currentState.easinessFactor,
+      intervalBefore:     currentState.intervalDays,
+      repetitionsBefore:  currentState.repetitions,
+      efAfter:            result.easinessFactor,
+      intervalAfter:      result.intervalDays,
+      repetitionsAfter:   result.repetitions,
+      responseTimeMs:     responseTimeMs ?? null,
     })
 
-    return updated
+    return updated!
   }
 }
 

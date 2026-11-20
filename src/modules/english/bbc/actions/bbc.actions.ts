@@ -40,14 +40,14 @@ export async function getEpisodesAction(filters?: {
         id:            ep.id,
         title:         ep.title,
         series:        ep.series,
-        episodeNumber: ep.episodeNumber,
-        cefrLevel:     ep.cefrLevel,
+        episodeCode:   ep.episodeCode,
+        cefrLevel:     ep.cefrLevel ?? '',
         audioUrl:      ep.audioUrl,
         transcriptUrl: ep.transcriptUrl,
         publishedAt:   ep.publishedAt,
         progress: prog
           ? {
-              status:         prog.status,
+              status:         prog.status ?? 'not_started',
               comprehension:  prog.comprehension,
               lastAccessedAt: prog.lastAccessedAt,
             }

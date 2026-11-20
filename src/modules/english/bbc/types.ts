@@ -7,7 +7,7 @@ export interface BbcEpisodeWithProgress {
   id:            string
   title:         string
   series:        string
-  episodeNumber: number
+  episodeCode: string
   cefrLevel:     string
   audioUrl:      string | null
   transcriptUrl: string | null

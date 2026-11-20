@@ -44,7 +44,7 @@ export class DecksRepository implements IRepository<FlashcardDeck, NewFlashcardD
       .values(data)
       .returning()
 
-    return result[0]
+    return result[0]!
   }
 
   async update(id: string, data: Partial<NewFlashcardDeck>): Promise<FlashcardDeck> {
@@ -54,7 +54,7 @@ export class DecksRepository implements IRepository<FlashcardDeck, NewFlashcardD
       .where(eq(english.flashcardDecks.id, id))
       .returning()
 
-    return result[0]
+    return result[0]!
   }
 
   async delete(id: string): Promise<void> {
@@ -78,7 +78,7 @@ export class DecksRepository implements IRepository<FlashcardDeck, NewFlashcardD
       .from(english.flashcards)
       .where(eq(english.flashcards.deckId, deckId))
 
-    const { total, newCards, due, mastered } = counts[0]
+    const { total, newCards, due, mastered } = counts[0]!
 
     await db
       .update(english.flashcardDecks)
@@ -138,7 +138,7 @@ export class CardsRepository implements IRepository<Flashcard, NewFlashcard> {
       .values(data)
       .returning()
 
-    return result[0]
+    return result[0]!
   }
 
   async update(id: string, data: Partial<NewFlashcard>): Promise<Flashcard> {
@@ -148,7 +148,7 @@ export class CardsRepository implements IRepository<Flashcard, NewFlashcard> {
       .where(eq(english.flashcards.id, id))
       .returning()
 
-    return result[0]
+    return result[0]!
   }
 
   async delete(id: string): Promise<void> {
@@ -189,7 +189,7 @@ export class CardsRepository implements IRepository<Flashcard, NewFlashcard> {
         totalReviews:   sql`${english.flashcards.totalReviews} + 1`,
         correctReviews: difficulty !== 'again'
           ? sql`${english.flashcards.correctReviews} + 1`
-          : english.flashcards.correctReviews,
+          : sql`${english.flashcards.correctReviews}`,
         updatedAt: new Date(),
       })
       .where(eq(english.flashcards.id, card.id))
@@ -210,7 +210,7 @@ export class CardsRepository implements IRepository<Flashcard, NewFlashcard> {
       responseTimeMs:     responseTimeMs ?? null,
     })
 
-    return updated
+    return updated!
   }
 }
 

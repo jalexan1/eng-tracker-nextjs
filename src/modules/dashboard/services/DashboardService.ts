@@ -170,7 +170,7 @@ export class DashboardService {
     for (let i = 6; i >= 0; i--) {
       const d = new Date()
       d.setDate(d.getDate() - i)
-      const key = d.toISOString().split('T')[0]
+      const key = d.toISOString().split('T')[0] ?? ''
       days.push({ date: key, englishCards: engMap.get(key) ?? 0, spanishCards: spanMap.get(key) ?? 0, totalMinutes: 0 })
     }
     return days

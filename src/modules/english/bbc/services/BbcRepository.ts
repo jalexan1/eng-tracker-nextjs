@@ -84,7 +84,7 @@ export class BbcProgressRepository {
         },
       })
       .returning()
-    return rows[0]
+    return rows[0]!
   }
 }
 
@@ -92,19 +92,17 @@ export class BbcProgressRepository {
 
 export class BbcVocabularyRepository {
   async findByUser(userId: string, episodeId?: string): Promise<BbcVocabulary[]> {
-    const base = db
+    const conditions = episodeId
+      ? and(
+          eq(english.bbcVocabulary.userId, userId),
+          eq(english.bbcVocabulary.episodeId, episodeId),
+        )
+      : eq(english.bbcVocabulary.userId, userId)
+
+    return db
       .select()
       .from(english.bbcVocabulary)
-      .where(eq(english.bbcVocabulary.userId, userId))
-
-    return episodeId
-      ? base.where(
-          and(
-            eq(english.bbcVocabulary.userId, userId),
-            eq(english.bbcVocabulary.episodeId, episodeId),
-          ),
-        )
-      : base
+      .where(conditions)
   }
 
   async save(data: NewBbcVocabulary): Promise<BbcVocabulary> {
@@ -112,7 +110,7 @@ export class BbcVocabularyRepository {
       .insert(english.bbcVocabulary)
       .values(data)
       .returning()
-    return rows[0]
+    return rows[0]!
   }
 }
 

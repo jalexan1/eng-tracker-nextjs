@@ -92,8 +92,8 @@ export function ReviewClient({ session }: Props) {
           ) : (
             <>
               <p className="text-xl font-semibold text-english">{card.back}</p>
-              {card.example && (
-                <p className="mt-3 text-sm italic text-gray-500 max-w-xs">"{card.example}"</p>
+              {card.exampleSentence && (
+                <p className="mt-3 text-sm italic text-gray-500 max-w-xs">"{card.exampleSentence}"</p>
               )}
             </>
           )}

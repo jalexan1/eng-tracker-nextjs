@@ -32,9 +32,9 @@ export default async function DecksPage() {
             className="card hover:shadow-md transition-shadow cursor-pointer block"
           >
             <div className="flex items-start gap-3">
-              <span className="text-2xl">{deck.coverEmoji ?? '📚'}</span>
+              <span className="text-2xl">📚</span>
               <div className="flex-1 min-w-0">
-                <h3 className="font-semibold text-gray-900 truncate">{deck.name}</h3>
+                <h3 className="font-semibold text-gray-900 truncate">{deck.title}</h3>
                 {deck.description && (
                   <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{deck.description}</p>
                 )}

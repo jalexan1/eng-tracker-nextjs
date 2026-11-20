@@ -6,140 +6,108 @@
 
 import { revalidatePath } from 'next/cache'
 import { createServerClient } from '@lib/supabase/server'
-import { db } from '@lib/db'
-import {
-  englishDecks,
-  englishCards,
-  englishCardReviews,
-} from '@lib/db/schema/english'
-import { eq, and, lte, or, isNull } from 'drizzle-orm'
-import { fail, ok, type ActionResult } from '@shared/types'
+import { decksRepository, cardsRepository } from '../services/DecksRepository'
+import { createDeckSchema, createCardSchema, reviewCardSchema } from '@lib/validations/english/decks'
+import { ok, fail } from '@shared/types'
+import type { ActionResult } from '@shared/types'
+import type { FlashcardDeck, Flashcard } from '@lib/db/schemas/english.schema'
+import type { ReviewSession } from '../types'
 
 // ── Crear deck ─────────────────────────────────────────────────
 export async function createDeckAction(
-  name: string,
-  description?: string
-): Promise<ActionResult> {
-  const supabase = await createServerClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) return fail('No autenticado')
+  input: unknown,
+): Promise<ActionResult<FlashcardDeck>> {
+  const parsed = createDeckSchema.safeParse(input)
+  if (!parsed.success)
+    return fail('Datos inválidos', parsed.error.flatten().fieldErrors)
 
   try {
-    await db.insert(englishDecks).values({
-      userId: user.id,
-      name,
-      description: description ?? null,
+    const supabase = await createServerClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return fail('No autenticado')
+
+    const deck = await decksRepository.create({
+      userId:      user.id,
+      title:       parsed.data.title,
+      description: parsed.data.description ?? null,
+      coverColor:  parsed.data.coverColor ?? '#6366F1',
     })
 
     revalidatePath('/english/decks')
-    return ok(undefined, 'Deck creado correctamente')
+    return ok(deck, 'Mazo creado correctamente')
   } catch (error) {
     console.error('createDeckAction error:', error)
-    return fail('Error al crear el deck')
+    return fail('Error al crear el mazo')
   }
 }
 
 // ── Crear tarjeta ──────────────────────────────────────────────
 export async function createCardAction(
-  deckId: string,
-  front: string,
-  back: string,
-  notes?: string
-): Promise<ActionResult> {
-  const supabase = await createServerClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) return fail('No autenticado')
+  input: unknown,
+): Promise<ActionResult<Flashcard>> {
+  const parsed = createCardSchema.safeParse(input)
+  if (!parsed.success)
+    return fail('Datos inválidos', parsed.error.flatten().fieldErrors)
 
   try {
+    const supabase = await createServerClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return fail('No autenticado')
+
     // Verificar que el deck pertenece al usuario
-    const deck = await db.query.englishDecks.findFirst({
-      where: and(
-        eq(englishDecks.id, deckId),
-        eq(englishDecks.userId, user.id)
-      ),
+    const deck = await decksRepository.findById(parsed.data.deckId)
+    if (!deck || deck.userId !== user.id)
+      return fail('Mazo no encontrado')
+
+    const card = await cardsRepository.create({
+      deckId:          parsed.data.deckId,
+      userId:          user.id,
+      front:           parsed.data.front,
+      back:            parsed.data.back,
+      phonetic:        parsed.data.phonetic ?? null,
+      exampleSentence: parsed.data.exampleSentence ?? null,
+      tags:            parsed.data.tags ?? null,
     })
 
-    if (!deck) return fail('Deck no encontrado')
+    // Actualizar contadores del deck
+    await decksRepository.updateCardCounts(parsed.data.deckId)
 
-    await db.insert(englishCards).values({
-      deckId,
-      front,
-      back,
-      notes: notes ?? null,
-    })
-
-    revalidatePath(`/english/decks/${deckId}`)
-    return ok(undefined, 'Tarjeta creada correctamente')
+    revalidatePath(`/english/decks/${parsed.data.deckId}`)
+    return ok(card, 'Tarjeta creada correctamente')
   } catch (error) {
     console.error('createCardAction error:', error)
     return fail('Error al crear la tarjeta')
   }
 }
 
-// ── Revisar tarjeta (spaced repetition) ───────────────────────
+// ── Revisar tarjeta (spaced repetition SM-2) ──────────────────
 export async function reviewCardAction(
-  cardId: string,
-  quality: number  // 0-5 (SM-2 algorithm)
-): Promise<ActionResult> {
-  const supabase = await createServerClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) return fail('No autenticado')
+  input: unknown,
+): Promise<ActionResult<Flashcard>> {
+  const parsed = reviewCardSchema.safeParse(input)
+  if (!parsed.success)
+    return fail('Datos inválidos', parsed.error.flatten().fieldErrors)
 
   try {
-    const card = await db.query.englishCards.findFirst({
-      where: eq(englishCards.id, cardId),
-      with: { deck: true },
-    })
+    const supabase = await createServerClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return fail('No autenticado')
 
-    if (!card || card.deck.userId !== user.id) {
+    const card = await cardsRepository.findById(parsed.data.cardId)
+    if (!card || card.userId !== user.id)
       return fail('Tarjeta no encontrada')
-    }
 
-    // SM-2 algorithm
-    const q = Math.max(0, Math.min(5, quality))
-    let { easeFactor = 2.5, interval = 1, repetitions = 0 } = card
-
-    if (q >= 3) {
-      if (repetitions === 0) interval = 1
-      else if (repetitions === 1) interval = 6
-      else interval = Math.round(interval * easeFactor)
-
-      repetitions += 1
-    } else {
-      repetitions = 0
-      interval = 1
-    }
-
-    easeFactor = Math.max(
-      1.3,
-      easeFactor + 0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)
+    const updated = await cardsRepository.applyReview(
+      card,
+      parsed.data.difficulty,
+      parsed.data.responseTimeMs,
     )
 
-    const nextReviewAt = new Date()
-    nextReviewAt.setDate(nextReviewAt.getDate() + interval)
+    // Actualizar contadores del deck
+    await decksRepository.updateCardCounts(parsed.data.deckId)
 
-    await db.update(englishCards)
-      .set({
-        easeFactor,
-        interval,
-        repetitions,
-        nextReviewAt,
-        lastReviewedAt: new Date(),
-      })
-      .where(eq(englishCards.id, cardId))
-
-    // Registrar review
-    await db.insert(englishCardReviews).values({
-      cardId,
-      userId: user.id,
-      quality: q,
-    })
-
-    revalidatePath(`/english/decks/${card.deckId}/review`)
-    return ok(undefined)
+    revalidatePath(`/english/decks/${parsed.data.deckId}/review`)
+    return ok(updated)
   } catch (error) {
     console.error('reviewCardAction error:', error)
     return fail('Error al registrar la revisión')
@@ -148,35 +116,30 @@ export async function reviewCardAction(
 
 // ── Obtener tarjetas pendientes de revisión ────────────────────
 export async function getDueCardsAction(
-  deckId: string
-): Promise<ActionResult<typeof englishCards.$inferSelect[]>> {
-  const supabase = await createServerClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) return fail('No autenticado')
-
+  deckId: string,
+): Promise<ActionResult<ReviewSession>> {
   try {
-    const deck = await db.query.englishDecks.findFirst({
-      where: and(
-        eq(englishDecks.id, deckId),
-        eq(englishDecks.userId, user.id)
-      ),
-    })
+    const supabase = await createServerClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return fail('No autenticado')
 
-    if (!deck) return fail('Deck no encontrado')
+    // Verificar que el deck pertenece al usuario
+    const deck = await decksRepository.findById(deckId)
+    if (!deck || deck.userId !== user.id)
+      return fail('Mazo no encontrado')
 
-    const now = new Date()
-    const cards = await db.query.englishCards.findMany({
-      where: and(
-        eq(englishCards.deckId, deckId),
-        or(
-          isNull(englishCards.nextReviewAt),
-          lte(englishCards.nextReviewAt, now)
-        )
-      ),
-    })
+    const cards = await cardsRepository.findDueCards(user.id, deckId)
 
-    return ok(cards)
+    const session: ReviewSession = {
+      deckId,
+      cards,
+      currentIndex: 0,
+      reviewed:     0,
+      correct:      0,
+      startedAt:    new Date(),
+    }
+
+    return ok(session)
   } catch (error) {
     console.error('getDueCardsAction error:', error)
     return fail('Error al obtener las tarjetas')

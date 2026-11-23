@@ -50,8 +50,8 @@ export async function POST(req: NextRequest) {
     const skipped:  string[] = []
     const errors:   { row: number; error: string }[] = []
 
-    for (let i = 0; i < verbRows.length; i++) {
-      const v = verbRows[i]
+    let rowNum = 2
+    for (const v of verbRows) {
       try {
         const { error } = await supabase
           .schema('english')
@@ -72,9 +72,10 @@ export async function POST(req: NextRequest) {
         if (error) throw new Error(error.message)
         inserted.push(v.base)
       } catch (err) {
-        errors.push({ row: i + 2, error: (err as Error).message })
+        errors.push({ row: rowNum, error: (err as Error).message })
         skipped.push(v.base)
       }
+      rowNum++
     }
 
     return NextResponse.json({
@@ -91,10 +92,9 @@ export async function POST(req: NextRequest) {
     const inserted: number[] = []
     const errors:   { row: number; error: string }[] = []
 
-    for (let i = 0; i < sentRows.length; i++) {
-      const s = sentRows[i]
+    let rowNum = 2
+    for (const s of sentRows) {
       try {
-        // Buscar el verb_id por base
         const { data: verb, error: vErr } = await supabase
           .schema('english')
           .from('verbs')
@@ -115,10 +115,11 @@ export async function POST(req: NextRequest) {
           })
 
         if (error) throw new Error(error.message)
-        inserted.push(i)
+        inserted.push(rowNum)
       } catch (err) {
-        errors.push({ row: i + 2, error: (err as Error).message })
+        errors.push({ row: rowNum, error: (err as Error).message })
       }
+      rowNum++
     }
 
     return NextResponse.json({

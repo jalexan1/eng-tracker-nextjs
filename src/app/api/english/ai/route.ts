@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
-import { redirect } from 'next/navigation'
 
 // Modelo Groq — gratuito, 30 RPM, 14 400 req/día
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions'
@@ -16,7 +15,7 @@ export async function POST(req: NextRequest) {
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { cookies: { get: (n) => cookieStore.get(n)?.value } },
+    { cookies: { get: (n: string) => cookieStore.get(n)?.value } },
   )
   const { data: { session } } = await supabase.auth.getSession()
   if (!session) {

@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 
+// ── Vercel: aumentar timeout a 60s para cargas grandes ────────────────────────
+export const maxDuration = 60
+
 // Tipos esperados del cliente (ya validados en el browser)
 interface VerbRow {
   base:        string
@@ -14,9 +17,9 @@ interface VerbRow {
 }
 
 interface SentenceRow {
-  verbBase:   string   // referencia al verbo por su forma base
-  form:       'base' | 'past' | 'participle'
-  sentence:   string
+  verbBase:    string   // referencia al verbo por su forma base
+  form:        'base' | 'past' | 'participle'
+  sentence:    string
   sentenceEs?: string
 }
 
@@ -43,90 +46,107 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Payload inválido' }, { status: 400 })
   }
 
-  // ── Cargue de VERBOS ─────────────────────────────────────────────────────
+  // ── Cargue de VERBOS — un solo batch upsert ───────────────────────────────
   if (type === 'verbs') {
     const verbRows = rows as VerbRow[]
-    const inserted: string[] = []
-    const skipped:  string[] = []
-    const errors:   { row: number; error: string }[] = []
 
-    let rowNum = 2
-    for (const v of verbRows) {
-      try {
-        const { error } = await supabase
-          .schema('english')
-          .from('verbs')
-          .upsert(
-            {
-              base:       v.base.toLowerCase().trim(),
-              past:       v.past.toLowerCase().trim(),
-              participle: v.participle.toLowerCase().trim(),
-              spanish:    v.spanish.trim(),
-              type:       v.type,
-              group:      v.group ?? null,
-              difficulty: v.difficulty ?? 1,
-            },
-            { onConflict: 'base' },
-          )
+    const records = verbRows.map((v) => ({
+      base:       v.base.toLowerCase().trim(),
+      past:       v.past.toLowerCase().trim(),
+      participle: v.participle.toLowerCase().trim(),
+      spanish:    v.spanish.trim(),
+      type:       v.type,
+      group:      v.group ?? null,
+      difficulty: v.difficulty ?? 1,
+    }))
 
-        if (error) throw new Error(error.message)
-        inserted.push(v.base)
-      } catch (err) {
-        errors.push({ row: rowNum, error: (err as Error).message })
-        skipped.push(v.base)
-      }
-      rowNum++
+    const { error, count } = await supabase
+      .schema('english')
+      .from('verbs')
+      .upsert(records, { onConflict: 'base', count: 'exact' })
+
+    if (error) {
+      return NextResponse.json({
+        ok:       false,
+        inserted: 0,
+        skipped:  0,
+        errors:   [{ row: 0, error: error.message }],
+      })
     }
 
     return NextResponse.json({
-      ok:       errors.length === 0,
-      inserted: inserted.length,
-      skipped:  skipped.length,
-      errors,
+      ok:       true,
+      inserted: count ?? records.length,
+      skipped:  0,
+      errors:   [],
     })
   }
 
-  // ── Cargue de ORACIONES ──────────────────────────────────────────────────
+  // ── Cargue de ORACIONES — batch en dos pasos ─────────────────────────────
   if (type === 'sentences') {
     const sentRows = rows as SentenceRow[]
-    const inserted: number[] = []
-    const errors:   { row: number; error: string }[] = []
 
-    let rowNum = 2
-    for (const s of sentRows) {
-      try {
-        const { data: verb, error: vErr } = await supabase
-          .schema('english')
-          .from('verbs')
-          .select('id')
-          .eq('base', s.verbBase.toLowerCase().trim())
-          .single()
+    // 1) Obtener todos los verb_id en una sola consulta
+    const uniqueBases = [...new Set(sentRows.map((s) => s.verbBase.toLowerCase().trim()))]
+    const { data: verbData, error: vErr } = await supabase
+      .schema('english')
+      .from('verbs')
+      .select('id, base')
+      .in('base', uniqueBases)
 
-        if (vErr || !verb) throw new Error(`Verbo '${s.verbBase}' no encontrado en BD`)
-
-        const { error } = await supabase
-          .schema('english')
-          .from('verb_sentences')
-          .insert({
-            verb_id:     verb.id,
-            form:        s.form,
-            sentence:    s.sentence.trim(),
-            sentence_es: s.sentenceEs?.trim() ?? null,
-          })
-
-        if (error) throw new Error(error.message)
-        inserted.push(rowNum)
-      } catch (err) {
-        errors.push({ row: rowNum, error: (err as Error).message })
-      }
-      rowNum++
+    if (vErr) {
+      return NextResponse.json({
+        ok: false, inserted: 0,
+        errors: [{ row: 0, error: vErr.message }],
+      })
     }
 
-    return NextResponse.json({
-      ok:       errors.length === 0,
-      inserted: inserted.length,
-      errors,
+    // Mapa base → id
+    const verbMap = new Map<string, number>(
+      (verbData ?? []).map((v: { id: number; base: string }) => [v.base, v.id])
+    )
+
+    // 2) Construir registros — omitir filas con verbo no encontrado
+    const sentRecords: { verb_id: number; form: string; sentence: string; sentence_es: string | null }[] = []
+    const errors: { row: number; error: string }[] = []
+
+    sentRows.forEach((s, idx) => {
+      const base = s.verbBase.toLowerCase().trim()
+      const verbId = verbMap.get(base)
+      if (!verbId) {
+        errors.push({ row: idx + 2, error: `Verbo '${s.verbBase}' no encontrado en BD` })
+        return
+      }
+      sentRecords.push({
+        verb_id:     verbId,
+        form:        s.form,
+        sentence:    s.sentence.trim(),
+        sentence_es: s.sentenceEs?.trim() ?? null,
+      })
     })
+
+    // 3) Batch insert de oraciones
+    if (sentRecords.length > 0) {
+      const { error: insErr, count } = await supabase
+        .schema('english')
+        .from('verb_sentences')
+        .insert(sentRecords, { count: 'exact' })
+
+      if (insErr) {
+        return NextResponse.json({
+          ok: false, inserted: 0,
+          errors: [{ row: 0, error: insErr.message }],
+        })
+      }
+
+      return NextResponse.json({
+        ok:       errors.length === 0,
+        inserted: count ?? sentRecords.length,
+        errors,
+      })
+    }
+
+    return NextResponse.json({ ok: false, inserted: 0, errors })
   }
 
   return NextResponse.json({ error: `Tipo '${type}' no soportado` }, { status: 400 })

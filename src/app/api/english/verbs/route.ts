@@ -69,10 +69,11 @@ export async function GET(req: NextRequest) {
     }
 
     // ── Count total (con mismos filtros) ─────────────────────────────────────
-    const [{ total }] = await db
+    const countResult = await db
       .select({ total: count() })
       .from(verbsTable)
       .where(whereClause)
+    const total = countResult[0]?.total ?? 0
 
     // ── Datos paginados ──────────────────────────────────────────────────────
     const data = await db

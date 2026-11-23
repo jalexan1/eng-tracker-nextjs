@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
+import { db } from '@lib/db'
+import { verbs as verbsTable } from '@/db/schema/english/verbs'
+import { eq, ilike, or, and, isNotNull, asc, count } from 'drizzle-orm'
 
 export const maxDuration = 30
 
 export async function GET(req: NextRequest) {
-  // ── Auth ─────────────────────────────────────────────────────────────────
+  // ── Auth (Supabase auth — no usa .schema()) ───────────────────────────────
   const cookieStore = cookies()
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -18,56 +21,84 @@ export async function GET(req: NextRequest) {
   }
 
   const { searchParams } = req.nextUrl
-  const page     = Math.max(1, Number(searchParams.get('page')  ?? '1'))
-  const limit    = Math.min(100, Math.max(1, Number(searchParams.get('limit') ?? '20')))
-  const search   = (searchParams.get('search') ?? '').trim().toLowerCase()
-  const typeFilter  = searchParams.get('type')  ?? ''   // 'regular' | 'irregular' | ''
+  const page        = Math.max(1, Number(searchParams.get('page')  ?? '1'))
+  const limit       = Math.min(100, Math.max(1, Number(searchParams.get('limit') ?? '20')))
+  const search      = (searchParams.get('search') ?? '').trim().toLowerCase()
+  const typeFilter  = searchParams.get('type')  ?? ''
   const groupFilter = searchParams.get('group') ?? ''
-  const download = searchParams.get('download') === '1'
+  const download    = searchParams.get('download') === '1'
 
-  // ── Construir query ──────────────────────────────────────────────────────
-  let query = supabase
-    .schema('english')
-    .from('verbs')
-    .select('id, base, past, participle, spanish, type, group, difficulty', { count: 'exact' })
-    .order('base', { ascending: true })
+  // ── Condiciones dinámicas via Drizzle (bypassa PostgREST) ─────────────────
+  const whereClause = and(
+    search
+      ? or(
+          ilike(verbsTable.base,    `%${search}%`),
+          ilike(verbsTable.spanish, `%${search}%`),
+          ilike(verbsTable.past,    `%${search}%`),
+        )
+      : undefined,
+    typeFilter === 'regular' || typeFilter === 'irregular'
+      ? eq(verbsTable.type, typeFilter as 'regular' | 'irregular')
+      : undefined,
+    groupFilter
+      ? eq(verbsTable.group, groupFilter)
+      : undefined,
+  )
 
-  if (search) {
-    query = query.or(`base.ilike.%${search}%,spanish.ilike.%${search}%,past.ilike.%${search}%`)
+  const selectedCols = {
+    id:         verbsTable.id,
+    base:       verbsTable.base,
+    past:       verbsTable.past,
+    participle: verbsTable.participle,
+    spanish:    verbsTable.spanish,
+    type:       verbsTable.type,
+    group:      verbsTable.group,
+    difficulty: verbsTable.difficulty,
   }
-  if (typeFilter === 'regular' || typeFilter === 'irregular') {
-    query = query.eq('type', typeFilter)
+
+  try {
+    // ── Descarga: sin paginación ─────────────────────────────────────────────
+    if (download) {
+      const data = await db
+        .select(selectedCols)
+        .from(verbsTable)
+        .where(whereClause)
+        .orderBy(asc(verbsTable.base))
+
+      return NextResponse.json({ data, total: data.length })
+    }
+
+    // ── Count total (con mismos filtros) ─────────────────────────────────────
+    const [{ total }] = await db
+      .select({ total: count() })
+      .from(verbsTable)
+      .where(whereClause)
+
+    // ── Datos paginados ──────────────────────────────────────────────────────
+    const data = await db
+      .select(selectedCols)
+      .from(verbsTable)
+      .where(whereClause)
+      .orderBy(asc(verbsTable.base))
+      .limit(limit)
+      .offset((page - 1) * limit)
+
+    const totalPages = Math.ceil(total / limit)
+
+    // ── Grupos únicos (sin filtro de grupo) ──────────────────────────────────
+    const groupsRaw = await db
+      .select({ group: verbsTable.group })
+      .from(verbsTable)
+      .where(isNotNull(verbsTable.group))
+      .orderBy(asc(verbsTable.group))
+
+    const groups = [...new Set(
+      groupsRaw.map((r) => r.group).filter((g): g is string => g !== null),
+    )]
+
+    return NextResponse.json({ data, total, page, totalPages, limit, groups })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return NextResponse.json({ error: msg }, { status: 500 })
   }
-  if (groupFilter) {
-    query = query.eq('group', groupFilter)
-  }
-
-  // Para descarga: sin paginación (todos los resultados filtrados)
-  if (download) {
-    const { data, error } = await query
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-    return NextResponse.json({ data: data ?? [], total: data?.length ?? 0 })
-  }
-
-  // Con paginación
-  const from = (page - 1) * limit
-  const to   = from + limit - 1
-  const { data, error, count } = await query.range(from, to)
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-
-  const total      = count ?? 0
-  const totalPages = Math.ceil(total / limit)
-
-  // Grupos únicos (para el filtro — consultamos aparte sin filtros de grupo)
-  const { data: groupData } = await supabase
-    .schema('english')
-    .from('verbs')
-    .select('group')
-    .not('group', 'is', null)
-    .order('group', { ascending: true })
-
-  const groups = [...new Set((groupData ?? []).map((r: { group: string | null }) => r.group).filter(Boolean))] as string[]
-
-  return NextResponse.json({ data: data ?? [], total, page, totalPages, limit, groups })
 }

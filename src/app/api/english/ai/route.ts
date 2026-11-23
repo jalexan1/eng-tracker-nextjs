@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 
-// Modelo Groq — gratuito, 30 RPM, 14 400 req/día
+// Modelo Groq — openai/gpt-oss-120b ($0.15/$0.60 por 1M tokens)
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions'
-const GROQ_MODEL   = 'llama-3.1-70b-versatile'
+const GROQ_MODEL   = 'openai/gpt-oss-120b'
 
 // Fallback: Gemini si GROQ_API_KEY no está configurado
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent'

@@ -41,7 +41,7 @@ const NAV: NavSection[] = [
   {
     title: 'App Inglés',
     items: [
-      { href: '/english/bbc-learning', label: 'BBC Learning',  icon: '📺' },
+      { href: '/english/bbc', label: 'BBC Learning',  icon: '📺' },
       { href: '/english/decks',        label: 'Flashcards',    icon: '🃏' },
       {
         kind:  'group',

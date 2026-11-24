@@ -25,6 +25,7 @@ import {
   index,
   uniqueIndex,
   check,
+  jsonb,
 } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 
@@ -245,6 +246,207 @@ export const grammarExercises = englishSchema.table('grammar_exercises', {
   topicIdx: index('english_grammar_topic_idx').on(t.grammarTopic),
 }))
 
+// ─────────────────────────────────────────────────────────────────
+// MÓDULO: VIDEOS DE APRENDIZAJE
+// ─────────────────────────────────────────────────────────────────
+
+export const videoStatusEnum = englishSchema.enum('video_status', [
+  'processing', 'ready', 'error',
+])
+
+export const evalStatusEnum = englishSchema.enum('eval_status', [
+  'pending', 'in_progress', 'completed',
+])
+
+export const questionTypeEnum = englishSchema.enum('question_type', [
+  'multiple_choice', 'fill_blank', 'translation', 'open_ended',
+])
+
+export const wordStatusEnum = englishSchema.enum('word_status', [
+  'learning', 'learned', 'mastered',
+])
+
+export const featureStatusEnum = englishSchema.enum('feature_status', [
+  'pending', 'in_progress', 'done', 'cancelled',
+])
+
+/**
+ * english.videos
+ * Videos de YouTube importados por el usuario.
+ */
+export const videos = englishSchema.table('videos', {
+  id:               uuid('id').primaryKey().defaultRandom(),
+  userId:           uuid('user_id').notNull(),
+  youtubeUrl:       text('youtube_url').notNull(),
+  youtubeId:        text('youtube_id').notNull(),
+  title:            text('title').notNull(),
+  description:      text('description'),
+  thumbnailUrl:     text('thumbnail_url'),
+  durationSeconds:  integer('duration_seconds'),
+  category:         text('category'),          // AI-detected
+  transcript:       text('transcript'),        // full transcript text
+  status:           videoStatusEnum('status').default('processing'),
+  errorMessage:     text('error_message'),
+  createdAt:        timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt:        timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  userIdx:    index('english_videos_user_idx').on(t.userId),
+  ytIdIdx:    index('english_videos_ytid_idx').on(t.youtubeId),
+  statusIdx:  index('english_videos_status_idx').on(t.status),
+}))
+
+/**
+ * english.video_verbs
+ * Verbos irregulares extraídos de un video por la IA.
+ */
+export const videoVerbs = englishSchema.table('video_verbs', {
+  id:               uuid('id').primaryKey().defaultRandom(),
+  videoId:          uuid('video_id').notNull(),
+  verbBase:         text('verb_base').notNull(),
+  verbPast:         text('verb_past'),
+  verbParticiple:   text('verb_participle'),
+  contextSentence:  text('context_sentence'),
+  createdAt:        timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  videoIdx: index('english_video_verbs_video_idx').on(t.videoId),
+}))
+
+/**
+ * english.video_sentences
+ * Frases/oraciones clave extraídas de un video.
+ */
+export const videoSentences = englishSchema.table('video_sentences', {
+  id:            uuid('id').primaryKey().defaultRandom(),
+  videoId:       uuid('video_id').notNull(),
+  sentenceEn:    text('sentence_en').notNull(),
+  sentenceEs:    text('sentence_es'),
+  difficulty:    text('difficulty').default('intermediate'), // beginner/intermediate/advanced
+  createdAt:     timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  videoIdx: index('english_video_sentences_video_idx').on(t.videoId),
+}))
+
+/**
+ * english.evaluations
+ * Sesión de evaluación de un usuario sobre un video.
+ */
+export const evaluations = englishSchema.table('evaluations', {
+  id:               uuid('id').primaryKey().defaultRandom(),
+  userId:           uuid('user_id').notNull(),
+  videoId:          uuid('video_id').notNull(),
+  totalQuestions:   integer('total_questions').default(10),
+  correctCount:     integer('correct_count').default(0),
+  scorePercentage:  real('score_percentage'),
+  status:           evalStatusEnum('status').default('pending'),
+  createdAt:        timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  completedAt:      timestamp('completed_at', { withTimezone: true }),
+}, (t) => ({
+  userIdx:  index('english_evals_user_idx').on(t.userId),
+  videoIdx: index('english_evals_video_idx').on(t.videoId),
+}))
+
+/**
+ * english.evaluation_questions
+ * Pregunta individual dentro de una evaluación.
+ * options almacena array JSON para multiple_choice: [{label, value}]
+ */
+export const evaluationQuestions = englishSchema.table('evaluation_questions', {
+  id:              uuid('id').primaryKey().defaultRandom(),
+  evaluationId:    uuid('evaluation_id').notNull(),
+  questionNumber:  integer('question_number').notNull(),
+  questionType:    questionTypeEnum('question_type').notNull(),
+  questionText:    text('question_text').notNull(),
+  options:         jsonb('options'),              // [{label: string, value: string}]
+  correctAnswer:   text('correct_answer').notNull(),
+  studentAnswer:   text('student_answer'),
+  aiGrade:         real('ai_grade'),             // 0-100
+  aiFeedback:      text('ai_feedback'),
+  isCorrect:       boolean('is_correct'),
+  createdAt:       timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  answeredAt:      timestamp('answered_at', { withTimezone: true }),
+}, (t) => ({
+  evalIdx: index('english_eval_q_eval_idx').on(t.evaluationId),
+}))
+
+/**
+ * english.student_errors
+ * Errores cometidos en evaluaciones — base del spaced repetition.
+ */
+export const studentErrors = englishSchema.table('student_errors', {
+  id:              uuid('id').primaryKey().defaultRandom(),
+  userId:          uuid('user_id').notNull(),
+  evaluationId:    uuid('evaluation_id').notNull(),
+  questionId:      uuid('question_id').notNull(),
+  videoId:         uuid('video_id').notNull(),
+  wordOrConcept:   text('word_or_concept').notNull(),
+  errorType:       text('error_type'),           // grammar/vocabulary/translation
+  nextReviewAt:    timestamp('next_review_at', { withTimezone: true }).defaultNow(),
+  reviewCount:     integer('review_count').default(0),
+  intervalDays:    integer('interval_days').default(1),
+  lastReviewedAt:  timestamp('last_reviewed_at', { withTimezone: true }),
+  createdAt:       timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  userIdx:   index('english_errors_user_idx').on(t.userId),
+  reviewIdx: index('english_errors_review_idx').on(t.userId, t.nextReviewAt),
+}))
+
+/**
+ * english.learned_words
+ * Palabras/verbos que el usuario domina (correctas consistentemente).
+ */
+export const learnedWords = englishSchema.table('learned_words', {
+  id:                  uuid('id').primaryKey().defaultRandom(),
+  userId:              uuid('user_id').notNull(),
+  word:                text('word').notNull(),
+  wordType:            text('word_type').default('verb'),    // verb/phrase/expression
+  sourceVideoId:       uuid('source_video_id'),
+  consecutiveCorrect:  integer('consecutive_correct').default(1),
+  status:              wordStatusEnum('status').default('learning'),
+  lastTestedAt:        timestamp('last_tested_at', { withTimezone: true }),
+  createdAt:           timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  userIdx:   index('english_learned_user_idx').on(t.userId),
+  statusIdx: index('english_learned_status_idx').on(t.userId, t.status),
+  wordUniq:  uniqueIndex('english_learned_word_user_uniq').on(t.userId, t.word),
+}))
+
+/**
+ * english.system_parameters
+ * Parámetros configurables del sistema por usuario.
+ * Ejemplos de key: 'eval_questions_count', 'review_block_size', 'spaced_repetition_days'
+ */
+export const systemParameters = englishSchema.table('system_parameters', {
+  id:        uuid('id').primaryKey().defaultRandom(),
+  userId:    uuid('user_id').notNull(),
+  language:  text('language').default('en'),     // 'en' | 'es'
+  key:       text('key').notNull(),
+  value:     text('value').notNull(),
+  label:     text('label'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  uniq: uniqueIndex('english_params_user_key_uniq').on(t.userId, t.language, t.key),
+}))
+
+/**
+ * english.pending_features
+ * Funcionalidades pendientes de investigar/desarrollar.
+ */
+export const pendingFeatures = englishSchema.table('pending_features', {
+  id:          uuid('id').primaryKey().defaultRandom(),
+  userId:      uuid('user_id').notNull(),
+  title:       text('title').notNull(),
+  description: text('description'),
+  context:     text('context'),                  // dónde se originó el pendiente
+  status:      featureStatusEnum('status').default('pending'),
+  priority:    smallint('priority').default(2),  // 1=alta, 2=media, 3=baja
+  createdAt:   timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt:   timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  userIdx:   index('english_pending_user_idx').on(t.userId),
+  statusIdx: index('english_pending_status_idx').on(t.status),
+}))
+
 // ── TypeScript types ───────────────────────────────────────────
 export type FlashcardDeck    = typeof flashcardDecks.$inferSelect
 export type NewFlashcardDeck = typeof flashcardDecks.$inferInsert
@@ -255,5 +457,24 @@ export type NewCardReview    = typeof cardReviews.$inferInsert
 export type BbcEpisode       = typeof bbcEpisodes.$inferSelect
 export type BbcUserProgress  = typeof bbcUserProgress.$inferSelect
 export type NewBbcUserProgress = typeof bbcUserProgress.$inferInsert
-export type BbcVocabulary    = typeof bbcVocabulary.$inferSelect
-export type NewBbcVocabulary = typeof bbcVocabulary.$inferInsert
+export type BbcVocabulary      = typeof bbcVocabulary.$inferSelect
+export type NewBbcVocabulary   = typeof bbcVocabulary.$inferInsert
+// Video learning types
+export type Video              = typeof videos.$inferSelect
+export type NewVideo           = typeof videos.$inferInsert
+export type VideoVerb          = typeof videoVerbs.$inferSelect
+export type NewVideoVerb       = typeof videoVerbs.$inferInsert
+export type VideoSentence      = typeof videoSentences.$inferSelect
+export type NewVideoSentence   = typeof videoSentences.$inferInsert
+export type Evaluation         = typeof evaluations.$inferSelect
+export type NewEvaluation      = typeof evaluations.$inferInsert
+export type EvaluationQuestion = typeof evaluationQuestions.$inferSelect
+export type NewEvaluationQuestion = typeof evaluationQuestions.$inferInsert
+export type StudentError       = typeof studentErrors.$inferSelect
+export type NewStudentError    = typeof studentErrors.$inferInsert
+export type LearnedWord        = typeof learnedWords.$inferSelect
+export type NewLearnedWord     = typeof learnedWords.$inferInsert
+export type SystemParameter    = typeof systemParameters.$inferSelect
+export type NewSystemParameter = typeof systemParameters.$inferInsert
+export type PendingFeature     = typeof pendingFeatures.$inferSelect
+export type NewPendingFeature  = typeof pendingFeatures.$inferInsert

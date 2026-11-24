@@ -49,6 +49,16 @@ export const schema = {
   enBbcUserProgress: englishTables.bbcUserProgress,
   enBbcVocabulary:   englishTables.bbcVocabulary,
   enGrammarExercises: englishTables.grammarExercises,
+  // video learning
+  enVideos:              englishTables.videos,
+  enVideoVerbs:          englishTables.videoVerbs,
+  enVideoSentences:      englishTables.videoSentences,
+  enEvaluations:         englishTables.evaluations,
+  enEvaluationQuestions: englishTables.evaluationQuestions,
+  enStudentErrors:       englishTables.studentErrors,
+  enLearnedWords:        englishTables.learnedWords,
+  enSystemParameters:    englishTables.systemParameters,
+  enPendingFeatures:     englishTables.pendingFeatures,
 
   // spanish.*
   esFlashcardDecks:  spanishTables.flashcardDecks,

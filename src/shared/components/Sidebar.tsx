@@ -59,6 +59,24 @@ const NAV: NavSection[] = [
         ],
       },
       { href: '/english/ai', label: 'Asistente IA', icon: '🤖' },
+      {
+        kind:  'group',
+        key:   'videos',
+        label: 'Videos',
+        icon:  '🎬',
+        children: [
+          { href: '/english/videos/import', label: 'Importar Video',   icon: '⬆️' },
+          { href: '/english/videos',        label: 'Mis Videos',       icon: '📹' },
+          { href: '/english/repaso',        label: 'Repaso',           icon: '🔄' },
+        ],
+      },
+    ],
+  },
+  {
+    title: 'Sistema',
+    items: [
+      { href: '/settings',   label: 'Parámetros',  icon: '⚙️' },
+      { href: '/pendientes', label: 'Pendientes',  icon: '📋' },
     ],
   },
   {

@@ -1,6 +1,12 @@
 /**
  * POST /api/english/videos/import
  * Pipeline: YouTube URL → transcript → IA extrae verbos/frases/categoría → DB
+ *
+ * fetchTranscript usa 4 estrategias encadenadas:
+ *   1. InnerTube ANDROID  — cliente más permisivo desde servidores (igual que yt-dlp)
+ *   2. InnerTube TVHTML5  — segundo cliente sin bot-detection de browser
+ *   3. timedtext directo  — API pública /api/timedtext para videos con CC
+ *   4. HTML scraping      — extrae ytInitialPlayerResponse del HTML con UA de Chrome
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
@@ -10,6 +16,10 @@ import { eq } from 'drizzle-orm'
 
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions'
 const GROQ_MODEL   = 'openai/gpt-oss-120b'
+
+// InnerTube API keys (claves públicas de los clientes oficiales de YouTube)
+const YT_ANDROID_KEY = 'AIzaSyA8eiZmM1LaS1KkMBDqnFhJzJy9XMuZq9Y'
+const YT_WEB_KEY     = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8'
 
 // ── Extrae el ID de YouTube de cualquier formato de URL ──────────
 function extractYouTubeId(url: string): string | null {
@@ -46,145 +56,251 @@ function parseXmlToText(xml: string): string | null {
   return transcript.length > 50 ? transcript : null
 }
 
-// ── Obtiene el transcript via YouTube InnerTube API + fallback scraping ──
-// Estrategia dual para funcionar desde IPs de datacenter (Vercel)
-async function fetchTranscript(videoId: string): Promise<string | null> {
+// ── Decodifica escapes unicode en URLs de YouTube ────────────────
+function decodeYtUrl(raw: string): string {
+  return raw
+    .replace(/\\u0026/g, '&')
+    .replace(/\\u003d/gi, '=')
+    .replace(/\\u003c/gi, '<')
+    .replace(/\\u003e/gi, '>')
+}
 
-  // ── Enfoque 1: InnerTube API (YouTube interno, sin scraping) ─────
-  // Es la misma API que usa yt-dlp; funciona sin cookies desde servidor
+// ── Busca el mejor track de captions en inglés ───────────────────
+type CaptionTrack = { languageCode?: string; kind?: string; baseUrl?: string }
+
+function pickEnglishTrack(tracks: CaptionTrack[]): CaptionTrack | null {
+  return (
+    tracks.find((t) => t.languageCode === 'en' && !t.kind) ??   // CC manual
+    tracks.find((t) => t.languageCode === 'en') ??               // CC auto-generated
+    tracks.find((t) => t.languageCode?.startsWith('en')) ??      // en-US, en-GB, etc.
+    tracks[0] ??                                                  // cualquier track
+    null
+  )
+}
+
+// ── Llama a un endpoint InnerTube y devuelve el transcript ───────
+async function fetchFromInnerTube(
+  videoId: string,
+  clientName: string,
+  clientVersion: string,
+  apiKey: string,
+  extraHeaders: Record<string, string> = {},
+  extraClientFields: Record<string, unknown> = {},
+): Promise<string | null> {
   try {
-    const innerTubeRes = await fetch(
-      'https://www.youtube.com/youtubei/v1/player?prettyPrint=false',
+    const res = await fetch(
+      `https://www.youtube.com/youtubei/v1/player?key=${apiKey}&prettyPrint=false`,
       {
         method: 'POST',
         headers: {
-          'Content-Type':  'application/json',
-          'User-Agent':    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-          'X-YouTube-Client-Name':    '1',
-          'X-YouTube-Client-Version': '2.20231121.09.00',
-          'Origin':  'https://www.youtube.com',
-          'Referer': `https://www.youtube.com/watch?v=${videoId}`,
+          'Content-Type': 'application/json',
+          ...extraHeaders,
         },
         body: JSON.stringify({
           videoId,
           context: {
             client: {
-              clientName:    'WEB',
-              clientVersion: '2.20231121.09.00',
-              hl:            'en',
-              gl:            'US',
-              utcOffsetMinutes: 0,
+              clientName,
+              clientVersion,
+              hl:  'en',
+              gl:  'US',
+              ...extraClientFields,
             },
           },
-          racyCheckOk:  true,
+          racyCheckOk:    true,
           contentCheckOk: true,
         }),
       },
     )
 
-    if (innerTubeRes.ok) {
-      const data = (await innerTubeRes.json()) as Record<string, unknown>
-      const captionsList = (
-        data as { captions?: { playerCaptionsTracklistRenderer?: { captionTracks?: unknown[] } } }
-      ).captions?.playerCaptionsTracklistRenderer?.captionTracks
+    if (!res.ok) return null
 
-      if (Array.isArray(captionsList) && captionsList.length > 0) {
-        type CaptionTrack = { languageCode?: string; kind?: string; baseUrl?: string }
-        const tracks = captionsList as CaptionTrack[]
-
-        // Preferir CC manual en inglés → CC auto-generated → cualquier track
-        const enTrack =
-          tracks.find((t) => t.languageCode === 'en' && !t.kind) ??
-          tracks.find((t) => t.languageCode === 'en') ??
-          tracks[0]
-
-        const captionUrl = enTrack?.baseUrl
-        if (captionUrl) {
-          const captionRes = await fetch(captionUrl)
-          if (captionRes.ok) {
-            const result = parseXmlToText(await captionRes.text())
-            if (result) return result
-          }
+    const data = (await res.json()) as {
+      captions?: {
+        playerCaptionsTracklistRenderer?: {
+          captionTracks?: CaptionTrack[]
         }
       }
     }
-  } catch {
-    // Continúa con el enfoque 2
-  }
 
-  // ── Enfoque 2: Scraping del HTML con UA real de Chrome ───────────
-  // YouTube puede bloquear IPs de datacenter, pero intentamos con UA completo
+    const tracks = data.captions?.playerCaptionsTracklistRenderer?.captionTracks
+    if (!Array.isArray(tracks) || tracks.length === 0) return null
+
+    const track = pickEnglishTrack(tracks)
+    if (!track?.baseUrl) return null
+
+    const captionUrl = decodeYtUrl(track.baseUrl)
+    const captionRes = await fetch(captionUrl)
+    if (!captionRes.ok) return null
+
+    return parseXmlToText(await captionRes.text())
+  } catch {
+    return null
+  }
+}
+
+// ── Estrategia 3: timedtext API directo ──────────────────────────
+async function fetchFromTimedtext(videoId: string): Promise<string | null> {
+  try {
+    // Primero obtener la lista de tracks disponibles
+    const listRes = await fetch(
+      `https://www.youtube.com/api/timedtext?v=${videoId}&type=list`,
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        },
+      },
+    )
+    if (!listRes.ok) return null
+    const listXml = await listRes.text()
+
+    // Buscar track en inglés (manual o auto)
+    const trackMatch =
+      listXml.match(/lang_code="en"[^/]*/i) ??
+      listXml.match(/lang_code="en-[A-Z]+"[^/]*/i)
+
+    const langCode = trackMatch
+      ? (trackMatch[0].match(/lang_code="([^"]+)"/i)?.[1] ?? 'en')
+      : 'en'
+
+    // Intentar obtener el transcript en ese idioma
+    const captionRes = await fetch(
+      `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${langCode}&fmt=srv3`,
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        },
+      },
+    )
+    if (!captionRes.ok) return null
+    const xml = await captionRes.text()
+    if (!xml.includes('<text')) return null
+    return parseXmlToText(xml)
+  } catch {
+    return null
+  }
+}
+
+// ── Estrategia 4: HTML scraping → ytInitialPlayerResponse ────────
+async function fetchFromHtmlScraping(videoId: string): Promise<string | null> {
   try {
     const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
       headers: {
         'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
         'Cache-Control':   'no-cache',
         'Sec-Fetch-Dest':  'document',
         'Sec-Fetch-Mode':  'navigate',
         'Sec-Fetch-Site':  'none',
       },
     })
-
     if (!pageRes.ok) return null
     const html = await pageRes.text()
 
-    // Múltiples patrones para captionTracks (el formato del HTML varía)
-    const trackPatterns = [
-      /"captionTracks":(\[.*?\]),"audioTracks"/s,
-      /"captionTracks":(\[.*?\]),"translationLanguages"/s,
-      /"captionTracks":(\[.*?\])}/s,
+    // Extraer ytInitialPlayerResponse del script inline
+    const scriptPatterns = [
+      /var ytInitialPlayerResponse\s*=\s*(\{.+?\});\s*(?:var |<\/script>)/s,
+      /ytInitialPlayerResponse\s*=\s*(\{.+?\});\s*(?:var |window\[)/s,
     ]
 
-    let tracksJson: string | null = null
-    for (const p of trackPatterns) {
-      const m = html.match(p)
-      if (m?.[1]) {
-        tracksJson = m[1]
-        break
+    let playerJson: string | null = null
+    for (const pattern of scriptPatterns) {
+      const m = html.match(pattern)
+      if (m?.[1]) { playerJson = m[1]; break }
+    }
+
+    // Fallback: buscar captionTracks directamente
+    if (!playerJson) {
+      const trackPatterns = [
+        /"captionTracks":(\[.*?\]),"audioTracks"/s,
+        /"captionTracks":(\[.*?\]),"translationLanguages"/s,
+      ]
+      for (const p of trackPatterns) {
+        const m = html.match(p)
+        if (m?.[1]) {
+          try {
+            const tracks = JSON.parse(m[1]) as CaptionTrack[]
+            const track  = pickEnglishTrack(tracks)
+            if (!track?.baseUrl) return null
+            const captionRes = await fetch(decodeYtUrl(track.baseUrl))
+            if (!captionRes.ok) return null
+            return parseXmlToText(await captionRes.text())
+          } catch { return null }
+        }
+      }
+      return null
+    }
+
+    // Parsear el JSON completo del player
+    let playerData: {
+      captions?: {
+        playerCaptionsTracklistRenderer?: {
+          captionTracks?: CaptionTrack[]
+        }
       }
     }
-    if (!tracksJson) return null
-
-    // Intentar parsear el array JSON completo
-    let tracks: { languageCode?: string; kind?: string; baseUrl?: string }[]
     try {
-      tracks = JSON.parse(tracksJson) as typeof tracks
+      playerData = JSON.parse(playerJson) as typeof playerData
     } catch {
-      // Fallback: extraer baseUrl con regex si el JSON no parsea bien
-      const rawUrl = tracksJson.match(/"baseUrl":"(https:[^"]+)"/)
-      if (!rawUrl?.[1]) return null
-      const captionUrl = rawUrl[1]
-        .replace(/\\u0026/g, '&')
-        .replace(/\\u003d/g, '=')
-        .replace(/\\u003D/g, '=')
-      const r = await fetch(captionUrl)
-      if (!r.ok) return null
-      return parseXmlToText(await r.text())
+      return null
     }
 
-    // Preferir CC manual en inglés → CC auto-generated → primer track disponible
-    const enTrack =
-      tracks.find((t) => t.languageCode === 'en' && !t.kind) ??
-      tracks.find((t) => t.languageCode === 'en') ??
-      tracks[0]
+    const tracks = playerData.captions?.playerCaptionsTracklistRenderer?.captionTracks
+    if (!Array.isArray(tracks) || tracks.length === 0) return null
 
-    if (!enTrack?.baseUrl) return null
+    const track = pickEnglishTrack(tracks)
+    if (!track?.baseUrl) return null
 
-    // Decodificar escapes unicode en la URL (& = &, = = =)
-    const captionUrl = enTrack.baseUrl
-      .replace(/\\u0026/g, '&')
-      .replace(/\\u003d/g, '=')
-      .replace(/\\u003D/g, '=')
-
-    const captionRes = await fetch(captionUrl)
+    const captionRes = await fetch(decodeYtUrl(track.baseUrl))
     if (!captionRes.ok) return null
     return parseXmlToText(await captionRes.text())
   } catch {
     return null
   }
+}
+
+// ── Orquestador principal: 4 estrategias en cascada ─────────────
+async function fetchTranscript(videoId: string): Promise<string | null> {
+
+  // ── Estrategia 1: InnerTube ANDROID ─────────────────────────────
+  // El cliente Android de YouTube bypasea el bot-detection de browser.
+  // YouTube no aplica las mismas restricciones a peticiones de la app oficial.
+  const androidResult = await fetchFromInnerTube(
+    videoId,
+    'ANDROID',
+    '19.09.37',
+    YT_ANDROID_KEY,
+    {
+      'User-Agent':              'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip',
+      'X-YouTube-Client-Name':   '3',
+      'X-YouTube-Client-Version': '19.09.37',
+    },
+    { androidSdkVersion: 30 },
+  )
+  if (androidResult) return androidResult
+
+  // ── Estrategia 2: InnerTube TV Embedded ─────────────────────────
+  // Smart TV client — también menos restrictivo que WEB desde servidores
+  const tvResult = await fetchFromInnerTube(
+    videoId,
+    'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
+    '2.0',
+    YT_WEB_KEY,
+    {
+      'User-Agent': 'Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/6.0 TV Safari/538.1',
+      'Origin':     'https://www.youtube.com',
+    },
+    {},
+  )
+  if (tvResult) return tvResult
+
+  // ── Estrategia 3: timedtext API directo ─────────────────────────
+  const timedtextResult = await fetchFromTimedtext(videoId)
+  if (timedtextResult) return timedtextResult
+
+  // ── Estrategia 4: HTML scraping con UA real de Chrome ───────────
+  return fetchFromHtmlScraping(videoId)
 }
 
 // ── Llama a Groq para analizar el transcript ─────────────────────
@@ -286,11 +402,11 @@ export async function POST(req: NextRequest) {
     .insert(english.videos)
     .values({
       userId,
-      youtubeUrl:  url,
+      youtubeUrl:   url,
       youtubeId,
-      title:       'Procesando…',
+      title:        'Procesando…',
       thumbnailUrl: `https://img.youtube.com/vi/${youtubeId}/hqdefault.jpg`,
-      status:      'processing',
+      status:       'processing',
     })
     .returning()
 
@@ -306,7 +422,7 @@ export async function POST(req: NextRequest) {
     await db.insert(english.pendingFeatures).values({
       userId,
       title:       `Video sin subtítulos: ${url}`,
-      description: 'Este video no tiene subtítulos CC disponibles. Se requiere investigar método alternativo de extracción.',
+      description: 'Este video no tiene subtítulos CC disponibles o no fue posible extraerlos.',
       context:     'import-video',
       status:      'pending',
       priority:    1,
@@ -320,10 +436,10 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(
       {
-        error:    'Este video no tiene subtítulos disponibles.',
-        detail:   'La función de importar videos sin CC está en desarrollo. El video fue guardado en la lista de Pendientes para cuando esté disponible.',
-        videoId:  newVideo.id,
-        pending:  true,
+        error:   'Este video no tiene subtítulos disponibles.',
+        detail:  'La función de importar videos sin CC está en desarrollo. El video fue guardado en la lista de Pendientes para cuando esté disponible.',
+        videoId: newVideo.id,
+        pending: true,
       },
       { status: 422 },
     )
@@ -341,7 +457,10 @@ export async function POST(req: NextRequest) {
     aiData = await analyzeWithAI(transcript, groqKey)
   } catch (err) {
     console.error('[AI Analysis Error]', err)
-    await db.update(english.videos).set({ status: 'error', errorMessage: 'Error en análisis IA' }).where(eq(english.videos.id, newVideo.id))
+    await db
+      .update(english.videos)
+      .set({ status: 'error', errorMessage: 'Error en análisis IA' })
+      .where(eq(english.videos.id, newVideo.id))
     return NextResponse.json({ error: 'Error al analizar el video con IA' }, { status: 500 })
   }
 
@@ -349,11 +468,11 @@ export async function POST(req: NextRequest) {
   await db
     .update(english.videos)
     .set({
-      title:      aiData.title ?? `Video ${youtubeId}`,
-      category:   aiData.category ?? 'general',
+      title:     aiData.title ?? `Video ${youtubeId}`,
+      category:  aiData.category ?? 'general',
       transcript,
-      status:     'ready',
-      updatedAt:  new Date(),
+      status:    'ready',
+      updatedAt: new Date(),
     })
     .where(eq(english.videos.id, newVideo.id))
 
@@ -361,10 +480,10 @@ export async function POST(req: NextRequest) {
   if (aiData.verbs && aiData.verbs.length > 0) {
     await db.insert(english.videoVerbs).values(
       aiData.verbs.map((v) => ({
-        videoId:        newVideo.id,
-        verbBase:       v.verbBase,
-        verbPast:       v.verbPast,
-        verbParticiple: v.verbParticiple,
+        videoId:         newVideo.id,
+        verbBase:        v.verbBase,
+        verbPast:        v.verbPast,
+        verbParticiple:  v.verbParticiple,
         contextSentence: v.contextSentence,
       })),
     )
@@ -383,11 +502,11 @@ export async function POST(req: NextRequest) {
   }
 
   return NextResponse.json({
-    success:  true,
-    videoId:  newVideo.id,
-    title:    aiData.title,
-    category: aiData.category,
-    verbsCount:    aiData.verbs?.length    ?? 0,
+    success:        true,
+    videoId:        newVideo.id,
+    title:          aiData.title,
+    category:       aiData.category,
+    verbsCount:     aiData.verbs?.length    ?? 0,
     sentencesCount: aiData.sentences?.length ?? 0,
   })
 }

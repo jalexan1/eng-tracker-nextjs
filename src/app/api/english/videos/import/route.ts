@@ -26,46 +26,162 @@ function extractYouTubeId(url: string): string | null {
   return null
 }
 
-// ── Obtiene el transcript via API interna de YouTube ─────────────
-// Funciona con videos que tienen CC habilitados (sin API key)
+// ── Convierte XML de captions en texto plano ─────────────────────
+function parseXmlToText(xml: string): string | null {
+  const textParts = xml.match(/<text[^>]*>([^<]*)<\/text>/g) ?? []
+  const transcript = textParts
+    .map((t) =>
+      t
+        .replace(/<[^>]+>/g, '')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/\n/g, ' ')
+        .trim(),
+    )
+    .filter(Boolean)
+    .join(' ')
+  return transcript.length > 50 ? transcript : null
+}
+
+// ── Obtiene el transcript via YouTube InnerTube API + fallback scraping ──
+// Estrategia dual para funcionar desde IPs de datacenter (Vercel)
 async function fetchTranscript(videoId: string): Promise<string | null> {
+
+  // ── Enfoque 1: InnerTube API (YouTube interno, sin scraping) ─────
+  // Es la misma API que usa yt-dlp; funciona sin cookies desde servidor
   try {
-    // Paso 1: obtener la página del video para encontrar el endpoint de captions
+    const innerTubeRes = await fetch(
+      'https://www.youtube.com/youtubei/v1/player?prettyPrint=false',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type':  'application/json',
+          'User-Agent':    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          'X-YouTube-Client-Name':    '1',
+          'X-YouTube-Client-Version': '2.20231121.09.00',
+          'Origin':  'https://www.youtube.com',
+          'Referer': `https://www.youtube.com/watch?v=${videoId}`,
+        },
+        body: JSON.stringify({
+          videoId,
+          context: {
+            client: {
+              clientName:    'WEB',
+              clientVersion: '2.20231121.09.00',
+              hl:            'en',
+              gl:            'US',
+              utcOffsetMinutes: 0,
+            },
+          },
+          racyCheckOk:  true,
+          contentCheckOk: true,
+        }),
+      },
+    )
+
+    if (innerTubeRes.ok) {
+      const data = (await innerTubeRes.json()) as Record<string, unknown>
+      const captionsList = (
+        data as { captions?: { playerCaptionsTracklistRenderer?: { captionTracks?: unknown[] } } }
+      ).captions?.playerCaptionsTracklistRenderer?.captionTracks
+
+      if (Array.isArray(captionsList) && captionsList.length > 0) {
+        type CaptionTrack = { languageCode?: string; kind?: string; baseUrl?: string }
+        const tracks = captionsList as CaptionTrack[]
+
+        // Preferir CC manual en inglés → CC auto-generated → cualquier track
+        const enTrack =
+          tracks.find((t) => t.languageCode === 'en' && !t.kind) ??
+          tracks.find((t) => t.languageCode === 'en') ??
+          tracks[0]
+
+        const captionUrl = enTrack?.baseUrl
+        if (captionUrl) {
+          const captionRes = await fetch(captionUrl)
+          if (captionRes.ok) {
+            const result = parseXmlToText(await captionRes.text())
+            if (result) return result
+          }
+        }
+      }
+    }
+  } catch {
+    // Continúa con el enfoque 2
+  }
+
+  // ── Enfoque 2: Scraping del HTML con UA real de Chrome ───────────
+  // YouTube puede bloquear IPs de datacenter, pero intentamos con UA completo
+  try {
     const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; LangTracker/1.0)',
+        'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Cache-Control':   'no-cache',
+        'Sec-Fetch-Dest':  'document',
+        'Sec-Fetch-Mode':  'navigate',
+        'Sec-Fetch-Site':  'none',
       },
     })
+
     if (!pageRes.ok) return null
     const html = await pageRes.text()
 
-    // Buscar el serializedShareEntity o captionTracks en el JS inline
-    const captionMatch = html.match(/"captionTracks":\[(\{.*?\})\]/)
-    if (!captionMatch) return null
+    // Múltiples patrones para captionTracks (el formato del HTML varía)
+    const trackPatterns = [
+      /"captionTracks":(\[.*?\]),"audioTracks"/s,
+      /"captionTracks":(\[.*?\]),"translationLanguages"/s,
+      /"captionTracks":(\[.*?\])}/s,
+    ]
 
-    // Extraer la URL del primer track en inglés
-    const captionTrack = captionMatch[1]
-    if (!captionTrack) return null
-    const baseUrlMatch = captionTrack.match(/"baseUrl":"([^"]+)"/)
-    if (!baseUrlMatch) return null
-    const baseUrlRaw = baseUrlMatch[1]
-    if (!baseUrlRaw) return null
-    const captionUrl = baseUrlRaw.replace(/\\u0026/g, '&')
+    let tracksJson: string | null = null
+    for (const p of trackPatterns) {
+      const m = html.match(p)
+      if (m?.[1]) {
+        tracksJson = m[1]
+        break
+      }
+    }
+    if (!tracksJson) return null
 
-    // Paso 2: descargar el XML del transcript
+    // Intentar parsear el array JSON completo
+    let tracks: { languageCode?: string; kind?: string; baseUrl?: string }[]
+    try {
+      tracks = JSON.parse(tracksJson) as typeof tracks
+    } catch {
+      // Fallback: extraer baseUrl con regex si el JSON no parsea bien
+      const rawUrl = tracksJson.match(/"baseUrl":"(https:[^"]+)"/)
+      if (!rawUrl?.[1]) return null
+      const captionUrl = rawUrl[1]
+        .replace(/\\u0026/g, '&')
+        .replace(/\\u003d/g, '=')
+        .replace(/\\u003D/g, '=')
+      const r = await fetch(captionUrl)
+      if (!r.ok) return null
+      return parseXmlToText(await r.text())
+    }
+
+    // Preferir CC manual en inglés → CC auto-generated → primer track disponible
+    const enTrack =
+      tracks.find((t) => t.languageCode === 'en' && !t.kind) ??
+      tracks.find((t) => t.languageCode === 'en') ??
+      tracks[0]
+
+    if (!enTrack?.baseUrl) return null
+
+    // Decodificar escapes unicode en la URL (& = &, = = =)
+    const captionUrl = enTrack.baseUrl
+      .replace(/\\u0026/g, '&')
+      .replace(/\\u003d/g, '=')
+      .replace(/\\u003D/g, '=')
+
     const captionRes = await fetch(captionUrl)
     if (!captionRes.ok) return null
-    const xml = await captionRes.text()
-
-    // Paso 3: extraer texto plano del XML
-    const textParts = xml.match(/<text[^>]*>([^<]+)<\/text>/g) ?? []
-    const transcript = textParts
-      .map((t) => t.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").trim())
-      .filter(Boolean)
-      .join(' ')
-
-    return transcript.length > 50 ? transcript : null
+    return parseXmlToText(await captionRes.text())
   } catch {
     return null
   }

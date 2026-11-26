@@ -98,31 +98,36 @@ Rules:
     }),
   })
 
-  let isCorrect = false
-  let grade     = 'incorrect'
-  let feedback  = ''
+  let isCorrect  = false
+  let gradeLabel = 'incorrect'   // 'correct' | 'partial' | 'incorrect'
+  let gradeScore = 0             // número 0-100 para aiGrade (real)
+  let feedback   = ''
 
   if (res.ok) {
     const aiData  = await res.json()
     const content = (aiData.choices?.[0]?.message?.content as string) ?? '{}'
     const clean   = content.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim()
     try {
-      const parsed = JSON.parse(clean)
-      isCorrect = parsed.isCorrect === true
-      grade     = parsed.grade ?? (isCorrect ? 'correct' : 'incorrect')
-      feedback  = parsed.feedback ?? ''
+      const parsed  = JSON.parse(clean)
+      isCorrect     = parsed.isCorrect === true
+      gradeLabel    = parsed.grade ?? (isCorrect ? 'correct' : 'incorrect')
+      feedback      = parsed.feedback ?? ''
     } catch {
       // fallback: simple string comparison
-      isCorrect = studentAnswer.trim().toLowerCase() === question.correctAnswer.trim().toLowerCase()
+      isCorrect  = studentAnswer.trim().toLowerCase() === question.correctAnswer.trim().toLowerCase()
+      gradeLabel = isCorrect ? 'correct' : 'incorrect'
     }
   }
+
+  // Convertir etiqueta a número para columna aiGrade (real)
+  gradeScore = gradeLabel === 'correct' ? 100 : gradeLabel === 'partial' ? 50 : 0
 
   // ── Actualizar la pregunta con respuesta del estudiante ────────
   await db
     .update(english.evaluationQuestions)
     .set({
       studentAnswer,
-      aiGrade:    grade,
+      aiGrade:    gradeScore,
       aiFeedback: feedback,
       isCorrect,
       answeredAt: new Date(),
@@ -202,7 +207,7 @@ Rules:
 
   return NextResponse.json({
     isCorrect,
-    grade,
+    grade: gradeLabel,
     feedback,
     correctAnswer: isCorrect ? undefined : question.correctAnswer,
     isEvalComplete:    isComplete,

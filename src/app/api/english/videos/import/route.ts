@@ -45,9 +45,13 @@ async function fetchTranscript(videoId: string): Promise<string | null> {
     if (!captionMatch) return null
 
     // Extraer la URL del primer track en inglés
-    const baseUrlMatch = captionMatch[1].match(/"baseUrl":"([^"]+)"/)
+    const captionTrack = captionMatch[1]
+    if (!captionTrack) return null
+    const baseUrlMatch = captionTrack.match(/"baseUrl":"([^"]+)"/)
     if (!baseUrlMatch) return null
-    const captionUrl = baseUrlMatch[1].replace(/\\u0026/g, '&')
+    const baseUrlRaw = baseUrlMatch[1]
+    if (!baseUrlRaw) return null
+    const captionUrl = baseUrlRaw.replace(/\\u0026/g, '&')
 
     // Paso 2: descargar el XML del transcript
     const captionRes = await fetch(captionUrl)
